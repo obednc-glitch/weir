@@ -1,132 +1,79 @@
-# Nox Confidential Safe Treasury Ledger
+# Weir
 
-A Gnosis Safe module implementing a confidential **internal accounting
-ledger**: the Safe deposits into an encrypted balance it holds within this
-contract, and payouts move an encrypted amount from that balance to a
-recipient's encrypted balance via Nox's `transfer` primitive. The amount
-moved — and even whether a payout succeeded — stays encrypted on-chain;
-only accounts explicitly granted access can decrypt it off-chain via the
-Nox JS SDK.
+**Compliance-gated USDC payments on Arc.**
 
-**Important scope note:** this module does **not** move real ETH or
-tokens. `fund()` and `requestPayout()` only update encrypted numbers in
-this contract's own storage (`_balances`) — there is no `payable`, no
-`.call{value:...}`, no ERC-20 transfer anywhere in the code. What's
-proven here is a genuine confidential accounting primitive (think:
-private payroll bookkeeping, or a settlement layer that nets out before
-a final real transfer) — not yet a complete payment rail. A real payout
-of funds would require adding a `withdraw()` path that moves actual
-assets out via `execTransactionFromModule` once a balance is decrypted;
-see "Also still open" below.
+Weir is a small smart contract and web page that screens a recipient before a USDC payment goes out. If the recipient is clean, the payment is delivered. If the recipient is on the blocklist, the payment is refunded to the sender and a `Blocked` event is recorded on-chain, so every screening decision leaves a public trail.
 
-## Revision history (why this looks different from the first draft)
+## Why
 
-The original scaffold guessed Nox worked like an async request/callback
-oracle (submit encrypted data, wait for a TEE callback with a result).
-The real docs (docs.noxprotocol.io) show something different and simpler:
-Nox is a **Solidity library** you call directly - `Nox.add`, `Nox.transfer`,
-`Nox.allow`, etc. - operating on encrypted types (`euint256`, `ebool`)
-inline in your function. The off-chain TEE computation happens
-asynchronously after your transaction, but the handle referencing the
-result is computed deterministically on-chain and returned immediately, so
-your Solidity logic reads as synchronous. This version reflects that.
+Sending USDC normally means the money leaves before anyone asks who is receiving it. Businesses paying suppliers, apps paying out rewards, and AI agents paying on their own all need a check at the moment of payment, plus proof that the check happened. Weir puts that check in the payment path itself.
 
-## What's private, and what isn't
+## How it works
 
-Nox hides **amounts and balances**, not addresses. A payout recipient is a
-plaintext address (same as any confidential-token design - see the Token
-Operations reference on docs.noxprotocol.io). What's hidden here is how
-much moved and what the resulting balances are - not who received
-something. Even the `success`/`failure` outcome of a transfer is encrypted
-by default (the docs explain this explicitly: exposing plaintext
-success/failure would create a "binary oracle" leaking balance info).
+1. The sender calls `screenedTransfer(recipient)` on the Weir contract and attaches USDC.
+2. The contract looks the recipient up in its blocklist.
+3. **Clean:** the USDC is forwarded to the recipient and a `Sent` event is emitted.
+4. **Blocked:** the USDC is returned to the sender and a `Blocked` event is emitted. The transaction does not revert, because a revert would erase the event. The refund and the log are what make the decision auditable.
 
-## Why this fits the WTF Hackathon Nox brief
-- Integrates cleanly: deploys as a standard Safe module - no fork or
-  modification of Safe itself.
-- Real privacy, not just encryption theater: amount and balance state
-  are genuinely hidden on-chain; access is opt-in and explicit via
-  Nox.allow / addViewer.
-- Deployable pattern: confidential treasury payouts (DAO payroll,
-  grants, contributor payments) is a real product need.
+The contract owner manages the blocklist with `setBlocked` and `setBlockedBatch`. Anyone can read a recipient's status with `isBlocked(address)`.
 
-## Structure
+## Why Arc
+
+USDC is Arc's native gas token, so a payment is a plain native transfer. There are no token approvals and no separate gas token to hold. A screened payment costs a fraction of a cent, which makes checking every payment practical.
+
+## Deployments
+
+| Network | Chain ID | Contract |
+| --- | --- | --- |
+| Arc Testnet | 5042002 | `0x039c77B11A09Ee9B8C458992b5d4a0C8Fb5B2473` |
+| Arc Mainnet | 5042 | TBD |
+
+Testnet proof transactions on [explorer.testnet.arc.io](https://explorer.testnet.arc.io):
+
+- Blocklist the burn address: [`0xd63039b7...0cb4`](https://explorer.testnet.arc.io/tx/0xd63039b7f27abbf3e8b75b40b4249596bf9316caf998fa8595a5550e43a20cb4)
+- Clean payment delivered: [`0x90faa690...fe18`](https://explorer.testnet.arc.io/tx/0x90faa690fc6d966a992bc0a5fd33ce98104ea38eeb5a8530de6a7e5093d6fe18)
+- Blocked payment refunded: [`0xef9cf008...561c`](https://explorer.testnet.arc.io/tx/0xef9cf0083421c3a4cb8810290fc1c987166282a8cc2824b269324f98a44e561c)
+
+Mainnet links will be added here after deployment.
+
+## Try it
+
+Open `index.html` in a browser.
+
+- **Check** tells you whether an address is blocked. It needs no wallet.
+- **Send** connects a browser wallet, switches to Arc, and sends through the contract. It reports "Sent" or "Blocked - refunded" with an explorer link.
+- The "Fill blocked example" button enters the burn address, which is blocklisted on testnet.
+
+To point the page at mainnet, set `ACTIVE` to `"mainnet"` in the config block at the top of the script and paste the deployed address.
+
+## Develop
+
+Requires [Foundry](https://book.getfoundry.sh/).
+
 ```
-src/
-  ISafe.sol             minimal Safe interface (swap for official
-                         safe-contracts import when you have network)
-  NoxPayoutModule.sol    the module: fund() + requestPayout() + balanceOf()
-script/
-  Deploy.s.sol           deployment script (no Nox address needed - it's
-                         a linked library, not a separate deployed contract)
-test/
-  NoxPayoutModule.t.sol  access-control tests (see note below on scope)
-  mocks/MockSafe.sol     simulates Safe's execTransactionFromModule
-package.json             pulls the real Nox Solidity library via npm
+forge test
 ```
 
-## Known gap: encrypted-value round-trip testing
+Deploy:
 
-Encrypted inputs (externalEuint256 + proof) are normally produced
-client-side by the Nox JS SDK's encryptInput, which signs an EIP-712
-proof - not something fabricable from plain Foundry/Solidity. Current
-tests cover access control only. Before the demo, either:
-- write a Foundry FFI test shelling out to a small Node script using the
-  JS SDK to generate a real encrypted input, or
-- check the "Hello World" / "Networks" docs pages for whether Nox ships
-  its own local test harness/mock for this.
-
-## Also still open
-- [ ] **No real asset movement yet.** `fund()`/`requestPayout()` only
-      update encrypted balances in this contract's own storage. Adding a
-      `withdraw()` function (recipient decrypts their balance, submits
-      proof, contract calls `execTransactionFromModule` to send real
-      ETH/tokens via the Safe) would close the loop into an actual
-      payment system. Not implemented — would need either a
-      public-decryption step (`Nox.allowPublicDecryption`) or an
-      off-chain-proof claim flow to let the contract verify the claimed
-      amount without just trusting the caller.
-- [ ] Confirm which chain/testnet the hackathon wants submissions on
-
-## Getting this running in Termux
 ```
-npm install
-forge install foundry-rs/forge-std
-forge build
-forge test -vvv
+forge create src/ScreenedTransfer.sol:ScreenedTransfer \
+  --rpc-url RPC_URL \
+  --chain-id CHAIN_ID \
+  --private-key $PRIVATE_KEY \
+  --broadcast
 ```
 
-## How judges can test this live
+## Limitations
 
-Deployed on **Ethereum Sepolia**:
-- Module: `0x9B83Efc08bECB7b73b5A892aaeEE68956Ce84746`
-- Demo Safe (1-of-1): `0x6b2895225Ccc174FFda8c8346E602698C7e43c66`
+- The blocklist is set by the contract owner. Weir does not read from a sanctions oracle or an external attestation service.
+- The contract has not been audited. It is a hackathon-stage build.
+- Weir screens the recipient address only, not the sender or the transaction pattern.
 
-**Easiest — the hosted front-end:**
-https://obednc-glitch.github.io/nox-confidential-treasury/
-Connect a wallet, encrypt an amount client-side, copy the handle/proof
-into Safe's Transaction Builder to call `fund`/`requestPayout`, then
-connect as the recipient in Step 3 to decrypt and confirm the exact
-amount landed in their ledger entry.
+## Next
 
-**Option A — Etherscan (if verified):**
-Go to the module address above on sepolia.etherscan.io, use the
-"Read/Write Contract" tabs directly.
+A pluggable screening source, so the blocklist can come from an on-chain attestation or oracle instead of a single owner key.
 
-**Option B — Safe UI + scripts directly:**
-1. Go to app.safe.global, open the Safe address above (or connect your own
-   Safe and enable this module via Settings > Modules > paste the module
-   address)
-2. Clone this repo, `npm install`, then generate an encrypted amount:
-   `MODULE_ADDRESS=0x9B83... SAFE_ADDRESS=<your Safe> node scripts/encrypt.js 500`
-3. In Safe's Transaction Builder app, call `fund(bytes32,bytes)` or
-   `requestPayout(address,bytes32,bytes)` on the module with the printed
-   handle/proof
-4. Decrypt any balance you're authorized to see:
-   `MODULE_ADDRESS=0x9B83... node scripts/decrypt.js <address>`
+## License
 
-**What to look for:** the on-chain transaction data and event logs never
-show a plaintext amount — only an authorized decrypt (step 4 above)
-reveals the real number. Note this confirms the *encrypted ledger entry*
-updated correctly — it does not move real Sepolia ETH (see scope note
-at the top of this README).
+MIT
