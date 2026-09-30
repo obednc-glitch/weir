@@ -28,13 +28,13 @@ contract ScreenedTransfer {
 
         if (blocked[to]) {
             emit Blocked(msg.sender, to, msg.value);
-            (bool refunded, ) = payable(msg.sender).call{value: msg.value}("");
+            (bool refunded,) = payable(msg.sender).call{value: msg.value}("");
             require(refunded, "refund failed");
             return;
         }
 
         emit Sent(msg.sender, to, msg.value);
-        (bool ok, ) = to.call{value: msg.value}("");
+        (bool ok,) = to.call{value: msg.value}("");
         require(ok, "transfer failed");
     }
 
