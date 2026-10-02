@@ -105,7 +105,7 @@ function withTimeout(p, ms) {
 }
 async function readBlocked(addr) {
   var urls = [N.rpc];
-  if (N.chainId === 5042) urls = urls.concat(["https://rpc.drpc.mainnet.arc.io", "https://rpc.quicknode.mainnet.arc.io", "https://rpc.blockdaemon.mainnet.arc.io"]);
+  if (N.chainId === 5042) urls = urls.concat(["https://rpc.drpc.mainnet.arc.io", "https://rpc.quicknode.mainnet.arc.io", "https://rpc.blockdaemon.mainnet.arc.io", "https://arc.drpc.org"]);
   for (var i = 0; i < urls.length; i++) {
     try {
       var p = new ethers.JsonRpcProvider(urls[i], N.chainId, { staticNetwork: true });
@@ -120,7 +120,7 @@ async function readBlocked(addr) {
       if (Number(net.chainId) === N.chainId) return await new ethers.Contract(N.contract, ABI, bp).isBlocked(addr);
     } catch (e) { /* fall through */ }
   }
-  throw new Error("Could not reach the Arc RPC from this browser. Try again, or check the contract on the explorer.");
+  throw new Error("Could not reach the Arc RPC. If you use Brave or another tracker blocker, turn Shields off for this page and try again, or check the contract on the explorer.");
 }
 function getTo() {
   var to = $("to").value.trim();
