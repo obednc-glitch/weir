@@ -100,9 +100,27 @@ function show(kind, title, html) {
   o.style.display = "block";
   o.innerHTML = "<b>" + title + "</b>" + (html || "");
 }
-function readContract() {
-  var p = new ethers.JsonRpcProvider(N.rpc, N.chainId);
-  return new ethers.Contract(N.contract, ABI, p);
+function withTimeout(p, ms) {
+  return Promise.race([p, new Promise(function (_, rej) { setTimeout(function () { rej(new Error("timeout")); }, ms); })]);
+}
+async function readBlocked(addr) {
+  var urls = [N.rpc];
+  if (N.chainId === 5042) urls = urls.concat(["https://rpc.drpc.mainnet.arc.io", "https://rpc.quicknode.mainnet.arc.io", "https://rpc.blockdaemon.mainnet.arc.io"]);
+  for (var i = 0; i < urls.length; i++) {
+    try {
+      var p = new ethers.JsonRpcProvider(urls[i], N.chainId, { staticNetwork: true });
+      var c = new ethers.Contract(N.contract, ABI, p);
+      return await withTimeout(c.isBlocked(addr), 8000);
+    } catch (e) { /* try the next endpoint */ }
+  }
+  if (window.ethereum) {
+    try {
+      var bp = new ethers.BrowserProvider(window.ethereum);
+      var net = await bp.getNetwork();
+      if (Number(net.chainId) === N.chainId) return await new ethers.Contract(N.contract, ABI, bp).isBlocked(addr);
+    } catch (e) { /* fall through */ }
+  }
+  throw new Error("Could not reach the Arc RPC from this browser. Try again, or check the contract on the explorer.");
 }
 function getTo() {
   var to = $("to").value.trim();
@@ -114,7 +132,7 @@ $("checkBtn").onclick = async function () {
   var to = getTo(); if (!to) return;
   $("checkBtn").disabled = true;
   try {
-    var b = await readContract().isBlocked(to);
+    var b = await readBlocked(to);
     if (b) show("bad", "Blocked", "This recipient is on the blocklist. A send would be refunded.");
     else show("ok", "Clean", "This recipient is not on the blocklist. A send would go through.");
   } catch (e) { show("bad", "Check failed", String(e.shortMessage || e.message)); }
