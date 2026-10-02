@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Weir - compliance-gated USDC payments on Arc</title>
+<style>
+:root{--bg:#0b1220;--card:#111a2e;--line:#1f2b46;--text:#e6ecf7;--mute:#8b9ab5;--acc:#2dd4bf;--bad:#f87171;--ok:#4ade80}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;line-height:1.5}
+.wrap{max-width:520px;margin:0 auto;padding:24px 16px 48px}
+h1{margin:0;font-size:28px;letter-spacing:.5px}
+h1 span{color:var(--acc)}
+.tag{color:var(--mute);margin:4px 0 20px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px}
+label{display:block;font-size:13px;color:var(--mute);margin:14px 0 6px}
+label:first-child{margin-top:0}
+input{width:100%;padding:12px;border-radius:10px;border:1px solid var(--line);background:#0d1526;color:var(--text);font-size:15px}
+input:focus{outline:1px solid var(--acc)}
+.chips{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.chip{font-size:12px;padding:5px 10px;border-radius:99px;border:1px solid var(--line);background:none;color:var(--mute);cursor:pointer}
+.row{display:flex;gap:10px;margin-top:18px}
+button.main{flex:1;padding:13px;border-radius:10px;border:0;font-size:15px;font-weight:600;cursor:pointer}
+#checkBtn{background:#1b2846;color:var(--text)}
+#sendBtn{background:var(--acc);color:#04211d}
+button:disabled{opacity:.5;cursor:default}
+#out{margin-top:16px;padding:14px;border-radius:10px;border:1px solid var(--line);display:none;word-break:break-word;font-size:14px}
+#out.ok{border-color:var(--ok)}#out.bad{border-color:var(--bad)}
+#out b{display:block;font-size:16px;margin-bottom:4px}
+#out.ok b{color:var(--ok)}#out.bad b{color:var(--bad)}
+a{color:var(--acc)}
+.net{display:flex;justify-content:space-between;font-size:12px;color:var(--mute);margin-bottom:14px}
+.foot{margin-top:18px;font-size:12px;color:var(--mute)}
+code{font-size:12px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>We<span>i</span>r</h1>
+  <p class="tag">Compliance-gated USDC payments on Arc.</p>
+
+  <div class="card">
+    <div class="net"><span id="netName"></span><span id="contractLink"></span></div>
+
+    <label for="to">Recipient address</label>
+    <input id="to" placeholder="0x..." autocomplete="off" spellcheck="false">
+    <div class="chips">
+      <button class="chip" id="badChip" type="button">Fill blocked example</button>
+    </div>
+
+    <label for="amt">Amount (USDC)</label>
+    <input id="amt" inputmode="decimal" value="0.01">
+
+    <div class="row">
+      <button class="main" id="checkBtn" type="button">Check</button>
+      <button class="main" id="sendBtn" type="button">Send</button>
+    </div>
+
+    <div id="out"></div>
+  </div>
+
+  <p class="foot">Check works without a wallet. Send needs a browser wallet. If the recipient is blocked, the contract refunds your USDC and records a Blocked event on-chain.</p>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/ethers@6.13.4/dist/ethers.umd.min.js"></script>
+<script>
+// ---- CONFIG: switch ACTIVE to "mainnet" after deploying, and paste the address ----
+var ACTIVE = "mainnet";
+var NETWORKS = {
+  testnet: {
+    name: "Arc Testnet", chainId: 5042002,
+    rpc: "https://rpc.testnet.arc.network",
+    explorer: "https://explorer.testnet.arc.io",
+    contract: "0x039c77B11A09Ee9B8C458992b5d4a0C8Fb5B2473"
+  },
+  mainnet: {
+    name: "Arc Mainnet", chainId: 5042,
+    rpc: "https://rpc.mainnet.arc.io",
+    explorer: "https://explorer.arc.io",
+    contract: "0x039c77B11A09Ee9B8C458992b5d4a0C8Fb5B2473"
+  }
+};
+var BAD_EXAMPLE = "0x000000000000000000000000000000000000dEaD";
+var ABI = [
+  "function screenedTransfer(address to) payable",
+  "function isBlocked(address account) view returns (bool)",
+  "event Sent(address indexed from, address indexed to, uint256 amount)",
+  "event Blocked(address indexed from, address indexed to, uint256 amount)"
+];
+var N = NETWORKS[ACTIVE];
+var $ = function (id) { return document.getElementById(id); };
+
+$("netName").textContent = N.name;
+$("contractLink").innerHTML = '<a target="_blank" rel="noopener" href="' + N.explorer + '/address/' + N.contract + '">contract</a>';
+$("badChip").onclick = function () { $("to").value = BAD_EXAMPLE; };
+
+function show(kind, title, html) {
+  var o = $("out");
+  o.className = kind;
+  o.style.display = "block";
+  o.innerHTML = "<b>" + title + "</b>" + (html || "");
+}
+function readContract() {
+  var p = new ethers.JsonRpcProvider(N.rpc, N.chainId);
+  return new ethers.Contract(N.contract, ABI, p);
+}
+function getTo() {
+  var to = $("to").value.trim();
+  if (!ethers.isAddress(to)) { show("bad", "Invalid address", "Enter a valid 0x address."); return null; }
+  return to;
+}
+
+$("checkBtn").onclick = async function () {
+  var to = getTo(); if (!to) return;
+  $("checkBtn").disabled = true;
+  try {
+    var b = await readContract().isBlocked(to);
+    if (b) show("bad", "Blocked", "This recipient is on the blocklist. A send would be refunded.");
+    else show("ok", "Clean", "This recipient is not on the blocklist. A send would go through.");
+  } catch (e) { show("bad", "Check failed", String(e.shortMessage || e.message)); }
+  $("checkBtn").disabled = false;
+};
+
+async function ensureChain() {
+  var hex = "0x" + N.chainId.toString(16);
+  try {
+    await window.ethereum.request({ method: "wallet_switchEthereumChain", params: [{ chainId: hex }] });
+  } catch (err) {
+    await window.ethereum.request({
+      method: "wallet_addEthereumChain",
+      params: [{ chainId: hex, chainName: N.name, rpcUrls: [N.rpc],
+        nativeCurrency: { name: "USDC", symbol: "USDC", decimals: 18 },
+        blockExplorerUrls: [N.explorer] }]
+    });
+  }
+}
+
+$("sendBtn").onclick = async function () {
+  var to = getTo(); if (!to) return;
+  var amt = $("amt").value.trim();
+  var value;
+  try { value = ethers.parseEther(amt); if (value <= 0n) throw new Error("zero"); }
+  catch (e) { show("bad", "Invalid amount", "Enter an amount greater than 0."); return; }
+  if (!window.ethereum) { show("bad", "No wallet found", "Open this page in a browser with a wallet. Check still works without one."); return; }
+  $("sendBtn").disabled = true;
+  try {
+    show("ok", "Waiting for wallet...", "");
+    await window.ethereum.request({ method: "eth_requestAccounts" });
+    await ensureChain();
+    var provider = new ethers.BrowserProvider(window.ethereum);
+    var signer = await provider.getSigner();
+    var c = new ethers.Contract(N.contract, ABI, signer);
+    var tx = await c.screenedTransfer(to, { value: value });
+    show("ok", "Submitted", "Waiting for confirmation...");
+    var rc = await tx.wait();
+    var link = '<br><a target="_blank" rel="noopener" href="' + N.explorer + '/tx/' + rc.hash + '">View transaction</a>';
+    var sent = false, blocked = false;
+    rc.logs.forEach(function (l) {
+      try {
+        var p = c.interface.parseLog(l);
+        if (p && p.name === "Sent") sent = true;
+        if (p && p.name === "Blocked") blocked = true;
+      } catch (x) {}
+    });
+    if (blocked) show("bad", "Blocked - refunded", "The recipient is on the blocklist. Your USDC was returned." + link);
+    else if (sent) show("ok", "Sent", amt + " USDC delivered." + link);
+    else show("ok", "Confirmed", link);
+  } catch (e) { show("bad", "Send failed", String(e.shortMessage || e.message)); }
+  $("sendBtn").disabled = false;
+};
+</script>
+</body>
+</html>
